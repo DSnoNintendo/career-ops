@@ -15,9 +15,7 @@
     "rollback": "node update-system.mjs rollback",
     "liveness": "node check-liveness.mjs",
     "scan": "node scan.mjs",
-    "linkedin": "node scan-auth.mjs",
-    "linkedin:login": "node scan-auth.mjs --login",
-    "linkedin:dry": "node scan-auth.mjs --dry-run"
+    "scan:auth": "node scan-auth.mjs"
   },
   "keywords": [
     "ai",
