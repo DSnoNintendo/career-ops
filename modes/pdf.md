@@ -9,6 +9,7 @@
 5. Detect company location → paper format:
    - US/Canada → `letter`
    - Resto del mundo → `a4`
+   - **Header `{{LOCATION}}` (Bay Area JDs):** When the employer is **based in the San Francisco Bay Area** (e.g. San Francisco, Oakland/East Bay, Berkeley, Peninsula, San Jose/South Bay; or hybrid/on-site tied to a Bay Area office per the JD), set **`{{LOCATION}}`** to **`Oakland, CA`** for this tailored PDF so the header matches strong Bay Area work history—even if `config/profile.yml` `candidate.location` is elsewhere (e.g. Los Angeles). For roles **not** in the Bay Area, use **`candidate.location`** from `profile.yml` as usual. If the user asks for a different header city, follow the user.
 6. Detecta arquetipo del rol → adapta framing
 7. Reescribe Professional Summary inyectando keywords del JD + exit narrative bridge ("Built and sold a business. Now applying systems thinking to [domain del JD].")
 8. Selecciona top 3-4 proyectos más relevantes para la oferta. Si un proyecto tiene URL en cv.md, enlaza el título del proyecto (`<a href="...">Nombre del proyecto</a>`).
@@ -76,7 +77,7 @@ Use the template in `cv-template.html`. Replace `{{...}}` placeholders with tail
 | `{{LINKEDIN_DISPLAY}}` | (from profile.yml) |
 | `{{PORTFOLIO_URL}}` | (from profile.yml) (or `/es` by language) |
 | `{{PORTFOLIO_DISPLAY}}` | (from profile.yml) (or `/es` by language) |
-| `{{LOCATION}}` | (from profile.yml) |
+| `{{LOCATION}}` | (from `profile.yml`, except Bay Area JDs → use **`Oakland, CA`**; see step 5) |
 | `{{SECTION_SUMMARY}}` | Professional Summary / Resumen Profesional |
 | `{{SUMMARY_TEXT}}` | Tailored summary with keywords |
 | `{{SECTION_COMPETENCIES}}` | Core Competencies / Competencias Core |
