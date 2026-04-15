@@ -11,10 +11,15 @@
  * DISCLAIMER: Portal scanning uses your own browser session. Respect each portal's terms of service.
  *
  * Usage:
- *   node scan-auth.mjs linkedin              # Normal scan
- *   node scan-auth.mjs --login linkedin       # Open browser to log in, then exit
- *   node scan-auth.mjs --search "AI Engineer" linkedin
- *   node scan-auth.mjs --dry-run linkedin     # Extract but don't write files
+ *   node scan-auth.mjs linkedin                          # Normal scan
+ * 
+ *  
+ *   node scan-auth.mjs --login linkedin                  # Open browser to log in, then exit 
+ *   
+ *   
+ *   node scan-auth.mjs --search "AI Engineer" linkedin   # Override portals.yml config for single search query [NON-AGENT USE ONLY]
+ *   node scan-auth.mjs --dry-run linkedin                # Extract but don't write files [NON-AGENT USE ONLY]
+ *   node scan-auth.mjs --max 1 linkedin                  # Override portals.yml config to cap results per search query [NON-AGENT USE ONLY]
  */
 
 import { chromium } from 'playwright';
