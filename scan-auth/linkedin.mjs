@@ -5,7 +5,8 @@
  * pagination, card extraction, search URL construction, and the scan loop.
  *
  * scan() handles the full extraction pipeline including filtering, dedup,
- * and employer blocklist. Returns only accepted listings ready to be saved.
+ * and employer blocklist. Title/company are read from each card before click;
+ * the card is opened only to read JD text and apply links.
  */
 
 
@@ -15,6 +16,12 @@
 
 const SELECTORS = {
   xpathListingCard: "//button[starts-with(@aria-label, 'Dismiss') and contains(@aria-label, 'job')]/ancestor::div[@role='button']",
+  /** Dismiss control on each left-rail card; aria-label is `Dismiss {job title} job` (EN UI). */
+  cardDismissButtonCss: 'button[aria-label^="Dismiss"][aria-label*=" job"]',
+  /** Job links inside the card (for stable ID / URL before opening the panel). */
+  cardJobLinkQuery: 'a[href*="/jobs/view/"], a[href*="currentJobId="], a[href*="trackingId"]',
+  /** Company name often appears on this anchor when present. */
+  cardCompanyLinkQuery: 'a[href*="/company/"]',
   xpathApplyUrl: "//a[@aria-label='Apply on company website']",
   xpathTitle: "//div[@data-display-contents='true']//a[contains(@href,'trackingId')]",
   xpathCompany: "//a[contains(@href,'/company/')]",
@@ -254,6 +261,37 @@ export default class LinkedInScanner {
               continue;
             }
 
+            const preview = await this.extractJobCardPreview(page, i);
+            if (!preview.title) {
+              warn(`  ✗ No title on card ${i} (preview); skipping`);
+              stats.errors++;
+              consecutiveFailures++;
+              continue;
+            }
+
+            const previewJobId = this.#extractJobId(preview.listingUrl);
+            const previewDedupKey = previewJobId || `${preview.company}::${preview.title}`.toLowerCase();
+            if (scanHistory.has(previewDedupKey)) {
+              log(`  ✗ Already seen: ${preview.title} (${preview.company})`);
+              stats.skipped_dedup++;
+              continue;
+            }
+
+            if (employerBlocklist.length && preview.company) {
+              const companyLower = preview.company.toLowerCase();
+              if (employerBlocklist.some(b => companyLower.includes(b.toLowerCase()))) {
+                log(`  ✗ Blocked employer: ${preview.company}`);
+                stats.skipped_filter++;
+                continue;
+              }
+            }
+
+            if (!this.#matchesFilter(preview.title, '', titleFilter)) {
+              log(`  ✗ Filtered: ${preview.title} (${preview.company})`);
+              stats.skipped_filter++;
+              continue;
+            }
+
             const clicked = await this.#clickCard(page, i);
             if (!clicked) {
               warn(`  ✗ Could not click card ${i}`);
@@ -263,56 +301,46 @@ export default class LinkedInScanner {
             await sleep(randomDelay(delayPages));
 
             const detail = await this.#extractDetailFromPanel(page);
-            if (!detail.title) {
-              warn(`  ✗ No title extracted from card ${i}`);
+            const title = (detail.title || preview.title).trim();
+            const company = (detail.company || preview.company).trim();
+            if (!title) {
+              warn(`  ✗ No title after panel open for card ${i}`);
               stats.errors++;
               consecutiveFailures++;
               continue;
             }
 
+            detail.title = title;
+            detail.company = company;
             detail.applicationUrl = this.#unwrapRedirect(detail.applicationUrl);
             stats.extracted++;
 
-            // Dedup by LinkedIn job ID (stable across sessions and keywords)
-            const jobId = this.#extractJobId(detail.url);
-            const dedupKey = jobId || `${detail.company}::${detail.title}`.toLowerCase();
-            if (scanHistory.has(dedupKey)) {
-              log(`  ✗ Already seen: ${detail.title} (${detail.company})`);
+            const jobId = this.#extractJobId(detail.url) || previewJobId;
+            const dedupKey = jobId || `${company}::${title}`.toLowerCase();
+            if (scanHistory.has(dedupKey) && dedupKey !== previewDedupKey) {
+              log(`  ✗ Already seen: ${title} (${company})`);
               stats.skipped_dedup++;
               continue;
             }
 
-            // Employer blocklist
-            if (employerBlocklist.length && detail.company) {
-              const companyLower = detail.company.toLowerCase();
-              if (employerBlocklist.some(b => companyLower.includes(b.toLowerCase()))) {
-                log(`  ✗ Blocked employer: ${detail.company}`);
-                stats.skipped_filter++;
-                continue;
-              }
-            }
-
-            // Title / keyword filter
-            if (!this.#matchesFilter(detail.title, detail.jdText, titleFilter)) {
-              log(`  ✗ Filtered: ${detail.title} (${detail.company})`);
+            if (!this.#matchesFilter(title, detail.jdText || '', titleFilter)) {
+              log(`  ✗ Filtered after JD: ${title} (${company})`);
               stats.skipped_filter++;
               continue;
             }
 
-            // No JD content
             if (!detail.jdText) {
-              warn(`  ✗ No JD content: ${detail.title}`);
+              warn(`  ✗ No JD content: ${title}`);
               stats.errors++;
               consecutiveFailures++;
               continue;
             }
 
-            // Success — reset circuit breaker
             consecutiveFailures = 0;
             scanHistory.add(dedupKey);
             listings.push(detail);
             accepted++;
-            log(`  ✓ Accepted: ${detail.title} at ${detail.company}`);
+            log(`  ✓ Accepted: ${title} at ${company}`);
           }
 
           if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -352,7 +380,10 @@ export default class LinkedInScanner {
   #extractJobId(url) {
     try {
       const u = new URL(url);
-      return u.searchParams.get('currentJobId') || '';
+      const fromQuery = u.searchParams.get('currentJobId') || '';
+      if (fromQuery) return fromQuery;
+      const m = u.pathname.match(/\/jobs\/view\/(\d+)/);
+      return m ? m[1] : '';
     } catch { return ''; }
   }
 
@@ -478,7 +509,116 @@ export default class LinkedInScanner {
     }, { xpath: SELECTORS.xpathListingCard, idx: index });
   }
 
+  async extractJobCardPreview(page, cardIndex) {
+    return page.evaluate(({ sel, idx, minTitleLen, noise }) => {
+      const snap = document.evaluate(
+        sel.xpathListingCard,
+        document,
+        null,
+        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+        null
+      );
+      const card = snap.snapshotItem(idx);
+      if (!card) {
+        return { title: '', company: '', location: '', listingUrl: '' };
+      }
 
+      const noiseSet = new Set((noise || []).map((s) => String(s).toLowerCase()));
+
+      let title = '';
+      const dismiss = card.querySelector(sel.cardDismissButtonCss || 'button[aria-label^="Dismiss"]');
+      if (dismiss) {
+        const al = dismiss.getAttribute('aria-label') || '';
+        const m = al.match(/^Dismiss\s+(.+?)\s+job\s*$/i);
+        if (m) title = m[1].trim();
+      }
+
+      let listingUrl = '';
+      const jobAnchors = card.querySelectorAll(sel.cardJobLinkQuery || 'a[href*="/jobs/"]');
+      for (const a of jobAnchors) {
+        const href = a.href || '';
+        if (href.includes('currentJobId=') || href.includes('/jobs/view/') || href.includes('trackingId')) {
+          listingUrl = href;
+          break;
+        }
+      }
+
+      let company = '';
+      for (const a of card.querySelectorAll(sel.cardCompanyLinkQuery || 'a[href*="/company/"]')) {
+        const t = (a.textContent ?? '').trim();
+        if (t.length >= 1 && t.length < 120 && !noiseSet.has(t.toLowerCase())) {
+          company = t;
+          break;
+        }
+      }
+
+      function looksLikeLocation(s) {
+        return /\((On-?site|Hybrid|Remote)\)/i.test(s)
+          || /,\s*[A-Z]{2}\b/.test(s)
+          || /\bRemote\b/i.test(s);
+      }
+
+      function looksLikeMetaLine(s) {
+        const lower = s.toLowerCase();
+        return lower === 'viewed'
+          || lower === '·'
+          || /school alumni works here/i.test(s)
+          || /early applicant/i.test(lower)
+          || /^posted on\b/i.test(s)
+          || /\b(hour|day|week|month)s?\s+ago$/i.test(s)
+          || /^[\d·|•\s]+$/.test(s);
+      }
+
+      if (!company) {
+        const paragraphs = [...card.querySelectorAll('p')]
+          .map((p) => (p.textContent ?? '').trim())
+          .filter((t) => t.length > 0 && t.length < 200);
+        for (const t of paragraphs) {
+          if (noiseSet.has(t.toLowerCase())) continue;
+          if (title && t === title) continue;
+          if (looksLikeMetaLine(t)) continue;
+          if (looksLikeLocation(t)) continue;
+          if (t.length < 2) continue;
+          company = t;
+          break;
+        }
+      }
+
+      let location = '';
+      for (const t of [...card.querySelectorAll('p')].map((p) => (p.textContent ?? '').trim())) {
+        if (looksLikeLocation(t) && t !== title && t !== company) {
+          location = t;
+          break;
+        }
+      }
+
+      if (!title) {
+        for (const t of [...card.querySelectorAll('p')].map((p) => (p.textContent ?? '').trim())) {
+          if (noiseSet.has(t.toLowerCase()) || looksLikeMetaLine(t)) continue;
+          if (t.length >= minTitleLen) {
+            title = t;
+            break;
+          }
+        }
+      }
+
+      return {
+        title: title || '',
+        company: company || '',
+        location: location || '',
+        listingUrl: listingUrl || '',
+      };
+    }, {
+      sel: SELECTORS,
+      idx: cardIndex,
+      minTitleLen: MIN_POSITION_LENGTH,
+      noise: [...NOISE_LABELS],
+    });
+  }
+
+  /**
+   * Whether LinkedIn marks the listing card as already opened (see SELECTORS.viewedStatusLabels).
+   */
   async isJobCardViewed(page, cardIndex) {
     return page.evaluate(({ sel, idx }) => {
       const snap = document.evaluate(
