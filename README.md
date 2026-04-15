@@ -34,9 +34,7 @@
 
 ---
 
-<p align="center">
-  <img src="docs/demo.gif" alt="Career-Ops Demo" width="800">
-</p>
+
 
 <p align="center"><strong>740+ job listings evaluated · 100+ personalized CVs · 1 dream role landed</strong></p>
 
@@ -170,6 +168,55 @@ The scanner comes with **45+ companies** ready to scan and **19 search queries**
 
 **Job boards searched:** Ashby, Greenhouse, Lever, Wellfound, Workable, RemoteFront
 
+## LinkedIn Scanner
+
+The standard portal scanner can't access LinkedIn (login wall). The LinkedIn scanner uses Playwright with a persistent browser profile to search LinkedIn with your authenticated session.
+
+### Setup
+
+```bash
+# Install (already included in dependencies)
+npx playwright install chromium
+
+# Log in once — opens a browser, you log in manually, session is saved
+node scan-auth.mjs --login
+```
+
+### Usage
+
+```bash
+# Run a scan
+node scan-auth.mjs
+
+# Or through Claude
+/career-ops scan-auth
+
+# Dry run (no files written)
+node scan-auth.mjs --dry-run
+
+# Scan a specific keyword only
+node scan-auth.mjs --search "AI Engineer"
+```
+
+### Configuration
+
+Add a `linkedin_searches` section to `portals.yml`:
+
+```yaml
+linkedin_searches:
+  date_posted: Week                        # Options: 24, Week, Month
+  experience_level: [Senior, Manager]      # Options: Entry-level, Senior, Manager, Director, Executive
+  max_results_per_search: 25
+  keywords:
+    - AI Engineer
+    - Software Engineer
+  employer_blocklist: [Staffing Agency]    # Skip these companies
+```
+
+The scanner builds search queries from your keywords, experience level, and date filter. It clicks through each job card, expands the description, applies your `title_filter` against the title and JD text, checks the employer blocklist, dedupes against `scan-history.tsv`, and saves matching JDs to `jds/`. Results are written to `data/linkedin-scan-results.json` for Claude to process into `pipeline.md`.
+
+Sessions persist at `~/.scan-auth/profile/` — you only need to log in once.
+
 ## Dashboard TUI
 
 The built-in terminal dashboard lets you browse your pipeline visually:
@@ -196,6 +243,7 @@ career-ops/
 │   ├── oferta.md                # Single evaluation
 │   ├── pdf.md                   # PDF generation
 │   ├── scan.md                  # Portal scanner
+│   ├── scan-auth.md             # LinkedIn scanner
 │   ├── batch.md                 # Batch processing
 │   └── ...
 ├── templates/
@@ -218,11 +266,11 @@ career-ops/
 
 ## Tech Stack
 
-![Claude Code](https://img.shields.io/badge/Claude_Code-000?style=flat&logo=anthropic&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=node.js&logoColor=white)
-![Playwright](https://img.shields.io/badge/Playwright-2EAD33?style=flat&logo=playwright&logoColor=white)
-![Go](https://img.shields.io/badge/Go-00ADD8?style=flat&logo=go&logoColor=white)
-![Bubble Tea](https://img.shields.io/badge/Bubble_Tea-FF75B5?style=flat&logo=go&logoColor=white)
+Claude Code
+Node.js
+Playwright
+Go
+Bubble Tea
 
 - **Agent**: Claude Code with custom skills and modes
 - **PDF**: Playwright/Puppeteer + HTML template
