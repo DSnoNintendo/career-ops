@@ -273,11 +273,14 @@ async function main() {
       warn('Not logged in — login required');
     }
 
-    if (!loggedIn) {
-      if (FLAG.login) {
-        log(`Login mode — opening ${scanner.name} login page`);
-        await page.goto(scanner.loginUrl, { waitUntil: 'domcontentloaded' });
-      }
+    if (!loggedIn && !FLAG.login) {
+      await page.close();
+      throw new Error(`Not logged in to ${scanner.name}. Run: node scan-auth.mjs --login ${portalId}`);
+    }
+
+    if (!loggedIn && FLAG.login) {
+      log(`Login mode — opening ${scanner.name} login page`);
+      await page.goto(scanner.loginUrl, { waitUntil: 'domcontentloaded' });
       await waitForLogin(page);
     }
 
