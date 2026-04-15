@@ -271,6 +271,7 @@ export default class LinkedInScanner {
               continue;
             }
 
+            scanHistory.add(detail.url);
             listings.push(detail);
             accepted++;
             log(`  ✓ Accepted: ${detail.title} at ${detail.company}`);
