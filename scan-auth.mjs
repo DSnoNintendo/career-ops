@@ -276,6 +276,7 @@ function printSummary(results) {
   console.log(`║  Extracted:         ${String(s.extracted).padStart(4)}                        ║`);
   console.log(`║  Filtered out:      ${String(s.skipped_filter).padStart(4)}                        ║`);
   console.log(`║  Already seen:      ${String(s.skipped_dedup).padStart(4)}                        ║`);
+  console.log(`║  Viewed skipped:    ${String(s.skipped_viewed ?? 0).padStart(4)}                        ║`);
   console.log(`║  JDs saved:         ${String(s.saved).padStart(4)}                        ║`);
   console.log(`║  Errors:            ${String(s.errors).padStart(4)}                        ║`);
   console.log('╚══════════════════════════════════════════════════╝');

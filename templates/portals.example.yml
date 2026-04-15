@@ -106,6 +106,8 @@ title_filter:
 linkedin_searches:
   # date_posted: filter by posting age. Options: 24, Week, Month
   date_posted: Week
+  # skip_viewed: skip cards LinkedIn shows as already viewed (default true if omitted). Set false to extract them anyway.
+  # skip_viewed: false
   # experience_level: Options: Entry-level, Senior, Manager, Director, Executive
   # experience_level: [Senior, Manager]
   max_results_per_search: 25

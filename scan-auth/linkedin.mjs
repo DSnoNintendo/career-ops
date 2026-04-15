@@ -23,6 +23,11 @@ const SELECTORS = {
   loggedIn: 'a[aria-label*="My Network"]',
   xpathCurrentPage: "//button[@aria-current='true'][starts-with(@aria-label, 'Page')]",
   xpathPageButton: "//button[starts-with(@aria-label, 'Page')]",
+
+  viewedStatusTagQuery: 'p, span, li',
+  viewedStatusLabels: ['Viewed'],
+  /** Characters allowed between the label and the next status token in `innerText` (middle dot, bullet, pipe) */
+  viewedStatusLineSeparatorCharClass: '·•|',
 };
 
 const NOISE_LABELS = new Set([
@@ -115,6 +120,10 @@ export default class LinkedInScanner {
             if (m[1] === 'keywords' && val.startsWith('[')) {
               config.keywords = val.replace(/[\[\]]/g, '').split(',').map(s => s.trim()).filter(Boolean);
             }
+            if (m[1] === 'skip_viewed') {
+              const v = String(val).trim().toLowerCase();
+              config.skip_viewed = v === 'true' || v === 'yes' || v === '1';
+            }
           }
           subsection = null;
           continue;
@@ -156,7 +165,7 @@ export default class LinkedInScanner {
   // Handles extraction, filtering, dedup, and employer blocklist.
   // Returns only accepted listings ready to be saved.
   //
-  // Options: { maxResults, searchFilter, scanHistory }
+  // Options: { maxResults, searchFilter, scanHistory, skipViewed }
   // -------------------------------------------------------------------------
 
   async scan(context, config, options = {}) {
@@ -166,6 +175,10 @@ export default class LinkedInScanner {
     const titleFilter = config.title_filter;
     const employerBlocklist = config.employer_blocklist || [];
     const scanHistory = options.scanHistory || new Set();
+    /** Omit cards LinkedIn marks as already opened. Default true when `skip_viewed` is absent in portals.yml. */
+    const skipViewed = options.skipViewed !== undefined
+      ? Boolean(options.skipViewed)
+      : config.skip_viewed !== false;
 
     const keywords = config.keywords || [];
     if (keywords.length === 0) {
@@ -189,7 +202,7 @@ export default class LinkedInScanner {
     const errors = [];
     const stats = {
       searched: 0, found: 0, extracted: 0,
-      skipped_filter: 0, skipped_dedup: 0, errors: 0,
+      skipped_filter: 0, skipped_dedup: 0, skipped_viewed: 0, errors: 0,
     };
 
     // Circuit breaker: bail out after too many consecutive extraction failures
@@ -233,6 +246,12 @@ export default class LinkedInScanner {
             if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
               warn(`${MAX_CONSECUTIVE_FAILURES} consecutive extraction failures — stopping this search (likely throttled or DOM changed)`);
               break;
+            }
+
+            if (skipViewed && await this.isJobCardViewed(page, i)) {
+              log(`  ✗ Viewed: skipped card ${i}`);
+              stats.skipped_viewed++;
+              continue;
             }
 
             const clicked = await this.#clickCard(page, i);
@@ -457,6 +476,40 @@ export default class LinkedInScanner {
       if (card) { card.click(); return true; }
       return false;
     }, { xpath: SELECTORS.xpathListingCard, idx: index });
+  }
+
+
+  async isJobCardViewed(page, cardIndex) {
+    return page.evaluate(({ sel, idx }) => {
+      const snap = document.evaluate(
+        sel.xpathListingCard,
+        document,
+        null,
+        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+        null
+      );
+      const card = snap.snapshotItem(idx);
+      if (!card) return false;
+
+      const labels = sel.viewedStatusLabels || [];
+      const labelSet = new Set(labels.map((s) => String(s).toLowerCase()));
+      const tagQuery = sel.viewedStatusTagQuery || 'p, span, li';
+      const candidates = card.querySelectorAll(tagQuery);
+      for (const el of candidates) {
+        const t = (el.textContent ?? '').trim();
+        if (t && labelSet.has(t.toLowerCase())) return true;
+      }
+
+      const sepClass = sel.viewedStatusLineSeparatorCharClass || '·•|';
+      const line = (card.innerText ?? '').replace(/\s+/g, ' ').trim();
+      for (const raw of labels) {
+        const esc = String(raw).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`\\b${esc}\\b\\s*[${sepClass}]`, 'i');
+        if (re.test(line)) return true;
+      }
+
+      return false;
+    }, { sel: SELECTORS, idx: cardIndex });
   }
 
   async #extractDetailFromPanel(page) {
