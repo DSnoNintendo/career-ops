@@ -111,9 +111,10 @@ linkedin_searches:
   max_results_per_search: 25
   delay_between_pages_ms: [3000, 8000]
   delay_between_searches_ms: [5000, 15000]
+  # append "remote" to keywords to filter for remote jobs. Jobs near your location will be included otherwise.
   keywords:
     - AI Engineer
-    - Software Engineer
+    - Software Engineer remote
   # employer_blocklist: companies to skip (case-insensitive, partial match)
   # employer_blocklist: [Staffing Agency, Recruiting Firm]
 
