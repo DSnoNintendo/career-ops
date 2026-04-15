@@ -123,15 +123,56 @@ function prompt(question) {
 // Scan history (dedup)
 // ---------------------------------------------------------------------------
 
+function extractJobIdFromUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.searchParams.get('currentJobId') || '';
+  } catch { return ''; }
+}
+
 function loadScanHistory() {
-  const urls = new Set();
-  if (!existsSync(SCAN_HISTORY_PATH)) return urls;
+  const keys = new Set();
+  if (!existsSync(SCAN_HISTORY_PATH)) return keys;
   const lines = readFileSync(SCAN_HISTORY_PATH, 'utf-8').split('\n');
   for (let i = 1; i < lines.length; i++) {
-    const url = lines[i].split('\t')[0];
-    if (url) urls.add(url);
+    const cols = lines[i].split('\t');
+    if (!cols[0]) continue;
+    const url = cols[0];
+    // Extract LinkedIn job ID for stable dedup, fall back to company::title key
+    const jobId = extractJobIdFromUrl(url);
+    if (jobId) {
+      keys.add(jobId);
+    } else {
+      // Fall back to company::title from TSV columns (cols[4]=company, cols[3]=title)
+      const company = (cols[4] || '').trim();
+      const title = (cols[3] || '').trim();
+      if (company && title) {
+        keys.add(`${company}::${title}`.toLowerCase());
+      }
+      keys.add(url); // also keep raw URL for non-LinkedIn sources
+    }
   }
-  return urls;
+  return keys;
+}
+
+function appendScanHistory(entries) {
+  const today = new Date().toISOString().split('T')[0];
+  let needsHeader = false;
+  if (!existsSync(SCAN_HISTORY_PATH)) {
+    needsHeader = true;
+    mkdirSync(dirname(SCAN_HISTORY_PATH), { recursive: true });
+  }
+  const lines = [];
+  if (needsHeader) {
+    lines.push('url\tfirst_seen\tportal\ttitle\tcompany\tstatus');
+  }
+  for (const e of entries) {
+    lines.push(`${e.url}\t${today}\t${e.portal}\t${e.title}\t${e.company}\t${e.status}`);
+  }
+  if (lines.length) {
+    const content = (needsHeader ? '' : '\n') + lines.join('\n');
+    writeFileSync(SCAN_HISTORY_PATH, content, { flag: 'a' });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,8 +341,9 @@ async function main() {
 
     if (!scanResult) return;
 
-    // Write JD files for each accepted listing
+    // Write JD files for each accepted listing and persist scan history
     const savedListings = [];
+    const historyEntries = [];
     for (const detail of scanResult.listings) {
       let jdFile = null;
       if (!FLAG.dryRun) {
@@ -313,6 +355,13 @@ async function main() {
         source_url: detail.url,
         application_url: detail.applicationUrl || '',
         jd_file: jdFile || `jds/${slugify(`${detail.company}-${detail.title}`)}.md`,
+      });
+      historyEntries.push({
+        url: detail.url,
+        portal: portalId,
+        title: detail.title,
+        company: detail.company,
+        status: 'added',
       });
     }
 
@@ -326,6 +375,8 @@ async function main() {
 
     if (!FLAG.dryRun) {
       writeResults(results, getResultsPath(portalId));
+      appendScanHistory(historyEntries);
+      log(`Wrote ${historyEntries.length} entries to scan-history.tsv`);
     } else {
       log('Dry run — no files written');
       console.log(JSON.stringify(results, null, 2));

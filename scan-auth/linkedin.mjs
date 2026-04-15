@@ -195,9 +195,14 @@ export default class LinkedInScanner {
       skipped_filter: 0, skipped_dedup: 0, errors: 0,
     };
 
+    // Circuit breaker: bail out after too many consecutive extraction failures
+    const MAX_CONSECUTIVE_FAILURES = 15;
+    let consecutiveFailures = 0;
+
     for (const search of toRun) {
       log(`\n── Search: ${search.name} ──`);
       stats.searched++;
+      consecutiveFailures = 0; // reset circuit breaker per search
 
       try {
         await page.goto(search.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -223,9 +228,16 @@ export default class LinkedInScanner {
               break;
             }
 
+            // Circuit breaker: stop if extraction is consistently failing
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              warn(`${MAX_CONSECUTIVE_FAILURES} consecutive extraction failures — stopping this search (likely throttled or DOM changed)`);
+              break;
+            }
+
             const clicked = await this.#clickCard(page, i);
             if (!clicked) {
               warn(`  ✗ Could not click card ${i}`);
+              consecutiveFailures++;
               continue;
             }
             await sleep(randomDelay(delayPages));
@@ -234,14 +246,17 @@ export default class LinkedInScanner {
             if (!detail.title) {
               warn(`  ✗ No title extracted from card ${i}`);
               stats.errors++;
+              consecutiveFailures++;
               continue;
             }
 
             detail.applicationUrl = this.#unwrapRedirect(detail.applicationUrl);
             stats.extracted++;
 
-            // Dedup
-            if (scanHistory.has(detail.url)) {
+            // Dedup by LinkedIn job ID (stable across sessions and keywords)
+            const jobId = this.#extractJobId(detail.url);
+            const dedupKey = jobId || `${detail.company}::${detail.title}`.toLowerCase();
+            if (scanHistory.has(dedupKey)) {
               log(`  ✗ Already seen: ${detail.title} (${detail.company})`);
               stats.skipped_dedup++;
               continue;
@@ -268,16 +283,21 @@ export default class LinkedInScanner {
             if (!detail.jdText) {
               warn(`  ✗ No JD content: ${detail.title}`);
               stats.errors++;
+              consecutiveFailures++;
               continue;
             }
 
-            scanHistory.add(detail.url);
+            // Success — reset circuit breaker
+            consecutiveFailures = 0;
+            scanHistory.add(dedupKey);
             listings.push(detail);
             accepted++;
             log(`  ✓ Accepted: ${detail.title} at ${detail.company}`);
           }
 
-          if (accepted < maxPerSearch) {
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            hasNextPage = false;
+          } else if (accepted < maxPerSearch) {
             hasNextPage = await this.#goToNextPage(page);
             if (hasNextPage) {
               log(`Navigating to next page...`);
@@ -302,6 +322,17 @@ export default class LinkedInScanner {
 
     await page.close();
     return { listings, errors, stats };
+  }
+
+  // -------------------------------------------------------------------------
+  // Private — job ID extraction (stable dedup key)
+  // -------------------------------------------------------------------------
+
+  #extractJobId(url) {
+    try {
+      const u = new URL(url);
+      return u.searchParams.get('currentJobId') || '';
+    } catch { return ''; }
   }
 
   // -------------------------------------------------------------------------
