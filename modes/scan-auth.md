@@ -20,10 +20,12 @@ If the scanner reports "Not logged in", tell the user to run the above command f
 node scan-auth.mjs <portal>
 ```
 
-Optional flags:
+Optional flags (meant for user testing/debugging, not normal operation):
 - `--search "keyword"` — scan a single keyword only
 - `--max N` — cap results per search keyword
 - `--dry-run` — extract but don't write files
+
+These override values already configured in `portals.yml`. Do not use these flags unless the user explicitly requests them.
 
 The scanner:
 - Reads `portals.yml` for keywords, experience level, date filter, and employer blocklist
