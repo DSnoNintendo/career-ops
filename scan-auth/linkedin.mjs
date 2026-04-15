@@ -160,7 +160,6 @@ export default class LinkedInScanner {
   // -------------------------------------------------------------------------
 
   async scan(context, config, options = {}) {
-    const page = await context.newPage();
     const maxPerSearch = options.maxResults || config.max_results || 25;
     const delayPages = config.delay_pages || [3000, 8000];
     const delaySearches = config.delay_searches || [5000, 15000];
@@ -171,7 +170,6 @@ export default class LinkedInScanner {
     const keywords = config.keywords || [];
     if (keywords.length === 0) {
       log('No keywords found in portals.yml');
-      await page.close();
       return null;
     }
 
@@ -184,7 +182,6 @@ export default class LinkedInScanner {
     if (toRun.length === 0) {
       log(`No keyword matching "${options.searchFilter}"`);
       log(`Available: ${searches.map(s => s.name).join(', ')}`);
-      await page.close();
       return null;
     }
 
@@ -203,6 +200,10 @@ export default class LinkedInScanner {
       log(`\n── Search: ${search.name} ──`);
       stats.searched++;
       consecutiveFailures = 0; // reset circuit breaker per search
+
+      // Fresh page per search — LinkedIn SPA accumulates state that breaks
+      // subsequent navigations when the page is reused across searches
+      const page = await context.newPage();
 
       try {
         await page.goto(search.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -311,6 +312,8 @@ export default class LinkedInScanner {
         log(`Search "${search.name}" failed: ${e.message}`);
         errors.push({ search: search.name, error: e.message });
         stats.errors++;
+      } finally {
+        await page.close();
       }
 
       if (toRun.indexOf(search) < toRun.length - 1) {
@@ -320,7 +323,6 @@ export default class LinkedInScanner {
       }
     }
 
-    await page.close();
     return { listings, errors, stats };
   }
 
