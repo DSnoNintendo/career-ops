@@ -179,23 +179,17 @@ The standard portal scanner can't access LinkedIn (login wall). The LinkedIn sca
 npx playwright install chromium
 
 # Log in once — opens a browser, you log in manually, session is saved
-node scan-auth.mjs --login
+node scan-auth.mjs --login linkedin
 ```
 
 ### Usage
 
 ```bash
 # Run a scan
-node scan-auth.mjs
+node scan-auth.mjs linkedin
 
 # Or through Claude
 /career-ops scan-auth
-
-# Dry run (no files written)
-node scan-auth.mjs --dry-run
-
-# Scan a specific keyword only
-node scan-auth.mjs --search "AI Engineer"
 ```
 
 ### Configuration
@@ -213,9 +207,22 @@ linkedin_searches:
   employer_blocklist: [Staffing Agency]    # Skip these companies
 ```
 
-The scanner builds search queries from your keywords, experience level, and date filter. It clicks through each job card, expands the description, applies your `title_filter` against the title and JD text, checks the employer blocklist, dedupes against `scan-history.tsv`, and saves matching JDs to `jds/`. Results are written to `data/linkedin-scan-results.json` for Claude to process into `pipeline.md`.
+### How it works
 
-Sessions persist at `~/.scan-auth/profile/` — you only need to log in once.
+For each keyword, the scanner builds a search URL and iterates through job cards on the results page. Per card:
+
+1. **Extract preview** — reads title, company, and location from the card DOM (no click)
+2. **Check viewed** — skips cards LinkedIn marks as already opened
+3. **Pre-click filters** — employer blocklist, cross-portal dedup (checks both LinkedIn job IDs and company::title keys from Greenhouse/Ashby/Lever scans), and title keyword filter
+4. **Click and extract** — clicks the card to get the job ID from the URL, expands the JD with "more", scrapes the apply link and full JD text
+5. **Post-click filters** — apply URL validation, JD-level title filter, JD content check
+6. **Save** — writes JD to `jds/`, appends entry to `data/pipeline.md`, records in `data/scan-history.tsv`
+
+Apply URLs are unwrapped from LinkedIn's `/safety/go` redirect. Easy Apply jobs (no external link) use the LinkedIn listing URL as the application URL.
+
+Skipped listings (duplicates, viewed) are also recorded in `scan-history.tsv` for visibility.
+
+Sessions persist at `~/.scan-auth/linkedin/profile/` — you only need to log in once.
 
 ## Dashboard TUI
 
