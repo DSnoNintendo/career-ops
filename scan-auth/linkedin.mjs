@@ -243,7 +243,7 @@ export default class LinkedInScanner {
             // 3. Blocklist, dedup, and title filter
             if (employerBlocklist.length && data.company) {
               const companyLower = data.company.toLowerCase();
-              if (employerBlocklist.some(b => companyLower.includes(b.toLowerCase()))) {
+              if (employerBlocklist.some(b => companyLower === b.toLowerCase())) {
                 log(`  ✗ Blocked employer: ${data.company}`);
                 stats.skipped_filter++;
                 continue;

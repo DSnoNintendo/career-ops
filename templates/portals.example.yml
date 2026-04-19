@@ -934,5 +934,5 @@ linkedin_searches:
     - AI Engineer San Diego, CA
     - Software Engineer remote
 
-  # Companies to skip (case-insensitive, partial match against card company name)
-  employer_blocklist: [STAFFING AGENCY, RECRUITING FIRM]
+  # Companies to skip (case-insensitive, exact match against card company name)
+  employer_blocklist: [Turing]

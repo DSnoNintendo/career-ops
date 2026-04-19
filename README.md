@@ -254,7 +254,7 @@ linkedin_searches:
   keywords:
     - AI Engineer
     - Software Engineer
-  employer_blocklist: [Staffing Agency]    # Skip these companies
+  employer_blocklist: [Staffing Agency]    # Skip these companies (case-insensitive, exact match)
 ```
 
 ### How it works
