@@ -334,7 +334,7 @@ function printSummary(results) {
     for (const l of results.listings) {
       console.log(`  • ${l.title} — ${l.company}`);
     }
-    console.log(`\nNext step: run /career-ops pipeline jobs saved to the pipeline.`);
+    console.log(`\nNext step: run /career-ops pipeline to evaluate the saved listings.`);
   } else {
     console.log('\nNo new listings found this run.');
   }
