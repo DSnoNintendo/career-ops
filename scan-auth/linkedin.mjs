@@ -4,18 +4,19 @@
  * All LinkedIn-specific logic: selectors, config parsing, session checks,
  * pagination, card extraction, search URL construction, and the scan loop.
  *
- * Per-card flow (scan loop):
+ * Per-card flow (scan loop, wrapped in try/finally for handle disposal):
  *   1. Resolve card element once via #getCard (evaluateHandle)
- *   2. extractJob() reads title/company/location from the card DOM,
- *      then clicks the card via #clickAndExtractJobId to get the job ID
- *      from the URL's currentJobId param, then calls #extractDetailFromPanel
- *      to scrape the apply link and JD text from the opened detail panel
- *   3. isJobCardViewed() checks for LinkedIn's "Viewed" label on the card
- *   4. Blocklist, dedup (job ID + company::title), and title filter run
- *      against the job data — dedup catches both same-run duplicates
- *      and cross-portal matches (Greenhouse/Ashby/Lever via scan-history.tsv)
- *   5. JD-level filter and apply URL validation run post-click
- *   6. Accepted listings and skipped entries are returned to the harness
+ *   2. #extractCardPreview() reads title/company/location from the card
+ *      DOM without clicking
+ *   3. isJobCardViewed() checks for LinkedIn's "Viewed" label — skips
+ *      before clicking so viewed cards are never opened
+ *   4. Blocklist, dedup (company::title), and title filter run against
+ *      the preview — dedup catches cross-portal matches
+ *      (Greenhouse/Ashby/Lever via scan-history.tsv)
+ *   5. extractJob() clicks the card, gets the job ID from the URL,
+ *      scrapes the apply link and JD text from the detail panel
+ *   6. Post-click dedup (by job ID), JD filter, apply URL validation
+ *   7. Accepted listings and skipped entries are returned to the harness
  *
  * Apply URL resolution:
  *   - External apply link (via xpathApplyUrl) → unwrapped from LinkedIn's
@@ -206,54 +207,75 @@ export default class LinkedInScanner {
             }
 
             const card = await this.#getCard(page, i);
+            try {
             const cardExists = await page.evaluate(c => c != null, card);
             if (!cardExists) {
               warn(`  ✗ Card ${i} not found`);
               stats.errors++;
               consecutiveFailures++;
-              await card.dispose();
               continue;
             }
 
-            // 1. Extract title, company, click card, extract detail
-            const data = await this.extractJob(page, card);
+            // 1. Read title, company, location from card DOM (no click)
+            const preview = await this.#extractCardPreview(page, card);
 
-            // 2. Check viewed label
+            // 2. Check viewed label (no click)
             if (skipViewed && await this.isJobCardViewed(page, card)) {
               log(`  ✗ Viewed: skipped card ${i}`);
               stats.skipped_viewed++;
               skipped.push({
-                url: data.listingUrl || '',
-                title: data.title || '',
-                company: data.company || '',
+                url: '',
+                title: preview.title || '',
+                company: preview.company || '',
                 status: 'skipped_viewed_linkedin',
               });
-              await card.dispose();
               continue;
             }
-            await card.dispose();
 
-            
-            if (!data.title) {
-              warn(`  ✗ No title on card ${i} (data); skipping`);
+            if (!preview.title) {
+              warn(`  ✗ No title on card ${i} (preview); skipping`);
               stats.errors++;
               consecutiveFailures++;
               continue;
             }
-            // 3. Blocklist, dedup, and title filter
-            if (employerBlocklist.length && data.company) {
-              const companyLower = data.company.toLowerCase();
+
+            // 3. Blocklist, dedup, and title filter (no click)
+            if (employerBlocklist.length && preview.company) {
+              const companyLower = preview.company.toLowerCase();
               if (employerBlocklist.some(b => companyLower === b.toLowerCase())) {
-                log(`  ✗ Blocked employer: ${data.company}`);
+                log(`  ✗ Blocked employer: ${preview.company}`);
                 stats.skipped_filter++;
                 continue;
               }
             }
 
-            const companyTitleKey = (data.company && data.title)
-              ? `${data.company}::${data.title}`.toLowerCase() : null;
+            const companyTitleKey = (preview.company && preview.title)
+              ? `${preview.company}::${preview.title}`.toLowerCase() : null;
+            if (companyTitleKey && scanHistory.has(companyTitleKey)) {
+              log(`  ✗ Already seen: ${preview.title} (${preview.company})`);
+              stats.skipped_dedup++;
+              skipped.push({
+                url: '',
+                title: preview.title || '',
+                company: preview.company || '',
+                status: 'skipped_dup',
+              });
+              continue;
+            }
+
+            if (!this.#matchesFilter(preview.title, '', titleFilter)) {
+              log(`  ✗ Filtered: ${preview.title} (${preview.company})`);
+              stats.skipped_filter++;
+              continue;
+            }
+
+            // 4. All pre-click checks passed — click card and extract detail
+            const data = await this.extractJob(page, card, preview);
+            stats.extracted++;
+
+            // 5. Post-click dedup (by job ID, now available after click)
             const dedupKey = data.jobId || companyTitleKey;
-            if ((dedupKey && scanHistory.has(dedupKey)) || (companyTitleKey && scanHistory.has(companyTitleKey))) {
+            if (data.jobId && scanHistory.has(data.jobId)) {
               log(`  ✗ Already seen: ${data.title} (${data.company})`);
               stats.skipped_dedup++;
               skipped.push({
@@ -264,14 +286,6 @@ export default class LinkedInScanner {
               });
               continue;
             }
-
-            if (!this.#matchesFilter(data.title, '', titleFilter)) {
-              log(`  ✗ Filtered: ${data.title} (${data.company})`);
-              stats.skipped_filter++;
-              continue;
-            }
-
-            stats.extracted++;
 
             if (!data.applicationUrl) {
               log(`  ✗ No apply URL: ${data.title} (${data.company})`);
@@ -304,6 +318,9 @@ export default class LinkedInScanner {
             });
             accepted++;
             log(`  ✓ Accepted: ${data.title} at ${data.company}`);
+            } finally {
+              await card.dispose();
+            }
           }
 
           if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -480,13 +497,11 @@ export default class LinkedInScanner {
   }
 
   /**
-   * Extract all data for a single job card. Reads title/company/location from
-   * the card DOM (no click), then clicks the card to get the job ID and opens
-   * the detail panel to scrape the apply URL and JD text.
-   * Returns { title, company, location, jobId, listingUrl, applicationUrl, jdText, clicked }.
+   * Read title, company, and location from the card DOM without clicking.
+   * Returns { title, company, location }.
    */
-  async extractJob(page, card) {
-    const data = await page.evaluate(({ card, sel, noise }) => {
+  async #extractCardPreview(page, card) {
+    return page.evaluate(({ card, sel, noise }) => {
       const noiseSet = new Set((noise || []).map((s) => String(s).toLowerCase()));
 
       let title = '';
@@ -553,21 +568,26 @@ export default class LinkedInScanner {
         location: location || '',
       };
     }, { card, sel: SELECTORS, noise: [...NOISE_LABELS] });
+  }
 
-    // Click card and extract job ID from the resulting URL
+  /**
+   * Click a card and extract full detail (job ID, apply URL, JD text).
+   * Call only after pre-click checks (viewed, blocklist, dedup, filter) pass.
+   * Returns the preview data augmented with jobId, listingUrl, applicationUrl, jdText.
+   */
+  async extractJob(page, card, preview) {
     const { clicked, jobId, listingUrl } = await this.#clickAndExtractJobId(page, card);
-    data.jobId = jobId;
-    data.listingUrl = listingUrl;
-    data.clicked = clicked;
+    preview.jobId = jobId;
+    preview.listingUrl = listingUrl;
+    preview.clicked = clicked;
 
-    // Extract detail from the now-open panel
     if (clicked) {
       const detail = await this.#extractDetailFromPanel(page, jobId);
-      data.applicationUrl = this.#unwrapRedirect(detail.applicationUrl);
-      data.jdText = detail.jdText;
+      preview.applicationUrl = this.#unwrapRedirect(detail.applicationUrl);
+      preview.jdText = detail.jdText;
     }
 
-    return data;
+    return preview;
   }
 
   /**
