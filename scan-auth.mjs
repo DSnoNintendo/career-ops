@@ -72,19 +72,32 @@ function getProfileDir(portal) {
 const args = process.argv.slice(2);
 const supportedNames = Object.keys(SCANNERS);
 
-const FLAGS = new Set(['--login']);
-const portalId = (() => {
-  for (let i = 0; i < args.length; i++) {
-    if (FLAGS.has(args[i])) continue;
-    return args[i];
-  }
-  return null;
-})();
+const KNOWN_FLAGS = new Set(['--login']);
+const parsedFlags = new Set();
+const positionalArgs = [];
 
-if (!portalId) {
-  console.error(`Usage: node scan-auth.mjs [options] <portal>\n\nSupported portals: ${supportedNames.join(', ')}`);
+for (const arg of args) {
+  if (arg.startsWith('--')) {
+    if (!KNOWN_FLAGS.has(arg)) {
+      console.error(`Unknown flag: "${arg}"\nUsage: node scan-auth.mjs [--login] <portal>\nSupported portals: ${supportedNames.join(', ')}`);
+      process.exit(1);
+    }
+    parsedFlags.add(arg);
+  } else {
+    positionalArgs.push(arg);
+  }
+}
+
+if (positionalArgs.length === 0) {
+  console.error(`Usage: node scan-auth.mjs [--login] <portal>\n\nSupported portals: ${supportedNames.join(', ')}`);
   process.exit(1);
 }
+if (positionalArgs.length > 1) {
+  console.error(`Too many arguments: "${positionalArgs.join('", "')}"\nUsage: node scan-auth.mjs [--login] <portal>`);
+  process.exit(1);
+}
+
+const portalId = positionalArgs[0];
 if (!SCANNERS[portalId]) {
   console.error(`Unknown portal: "${portalId}"\nSupported portals: ${supportedNames.join(', ')}`);
   process.exit(1);
@@ -93,7 +106,7 @@ if (!SCANNERS[portalId]) {
 const scanner = SCANNERS[portalId];
 
 const FLAG = {
-  login: args.includes('--login'),
+  login: parsedFlags.has('--login'),
 };
 
 // ---------------------------------------------------------------------------
