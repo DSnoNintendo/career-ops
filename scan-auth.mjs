@@ -207,7 +207,10 @@ function appendScanHistory(entries) {
  */
 function appendToPipeline(listings) {
   if (listings.length === 0) return;
-  if (!existsSync(PIPELINE_PATH)) return;
+  if (!existsSync(PIPELINE_PATH)) {
+    warn(`pipeline.md not found — listings not added. Create data/pipeline.md or run onboarding first.`);
+    return;
+  }
 
   let text = readFileSync(PIPELINE_PATH, 'utf-8');
 
@@ -285,7 +288,9 @@ function yamlEscape(str) {
 /** Save a JD to jds/{slug}.md with YAML frontmatter. Returns the relative path. */
 function saveJd(detail) {
   mkdirSync(JDS_DIR, { recursive: true });
-  const slug = slugify(`${detail.company}-${detail.title}`);
+  const jobId = extractJobIdFromUrl(detail.url || '');
+  const suffix = jobId || Date.now().toString();
+  const slug = slugify(`${detail.company}-${detail.title}-${suffix}`);
   const filename = `${slug}.md`;
   const filepath = join(JDS_DIR, filename);
 
