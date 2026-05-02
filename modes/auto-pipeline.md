@@ -23,7 +23,11 @@ Ejecutar exactamente igual que el modo `oferta` (leer `modes/oferta.md` para tod
 Guardar la evaluación completa en `reports/{###}-{company-slug}-{YYYY-MM-DD}.md` (ver formato en `modes/oferta.md`).
 Include Block G in the saved report. Add `**Legitimacy:** {tier}` to the report header.
 
-## Step 2 — Save report `.md`
+## Paso 3 — Generar PDF
+Read `config/profile.yml`. Check `cv.output_format`:
+
+- If `"latex"`, execute the full pipeline from `modes/latex.md`
+- Otherwise (default), execute the full pipeline from `modes/pdf.md`
 
 Save the full evaluation to `reports/{###}-{company-slug}-{YYYY-MM-DD}.md` (format in `modes/oferta.md`).
 

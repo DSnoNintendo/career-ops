@@ -95,19 +95,19 @@ Use the template in `cv-template.html`. Replace `{{...}}` placeholders with tail
 
 ## Canva CV generation (optional)
 
-If `config/profile.yml` has `canva_resume_design_id` set, offer a choice before generating:
-- **“HTML/PDF (fast, ATS-optimized)”** — flow above
-- **“Canva CV (visual, design-preserving)”** — flow below
+If `config/profile.yml` has `cv.canva_resume_design_id` set, offer the user a choice before generating:
+- **"HTML/PDF (fast, ATS-optimized)"** — existing flow above
+- **"Canva CV (visual, design-preserving)"** — new flow below
 
-If there is no `canva_resume_design_id`, skip this prompt and use the HTML/PDF flow.
+If the user has no `cv.canva_resume_design_id`, skip this prompt and use the HTML/PDF flow.
 
 ### Canva workflow
 
 #### Step 1 — Duplicate the base design
 
-a. `export-design` the base design (using `canva_resume_design_id`) as PDF → get download URL  
-b. `import-design-from-url` using that download URL → creates a new editable design (the duplicate)  
-c. Note the new `design_id` for the duplicate  
+a. `export-design` the base design (using `cv.canva_resume_design_id`) as PDF → get download URL
+b. `import-design-from-url` using that download URL → creates a new editable design (the duplicate)
+c. Note the new `design_id` for the duplicate
 
 #### Step 2 — Read the design structure
 
