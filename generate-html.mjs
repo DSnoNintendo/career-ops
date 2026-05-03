@@ -95,7 +95,7 @@ ${bullets}
 function renderProjects(projects) {
   return projects.map(p => {
     let h = `    <div class="project">
-      <div class="project-title">${esc(p.title)}</div>
+      <div class="project-title">${p.url ? `<a href="${esc(p.url)}">${esc(p.title)}</a>` : esc(p.title)}</div>
       <div class="project-desc">${p.description}</div>`;
     if (p.tech) h += `\n      <div class="project-tech">${esc(p.tech)}</div>`;
     return h + '\n    </div>';

@@ -11,7 +11,7 @@
    - Rest of world → `a4`
 6. Detect role archetype → adapt framing
 7. Rewrite Professional Summary, injecting JD keywords + exit narrative bridge ("Built and sold a business. Now applying systems thinking to [JD domain].")
-8. Select top 3–4 projects most relevant to the posting
+8. Select top 3–4 projects most relevant to the posting; include `url` from cv.md when available
 9. Reorder experience bullets by relevance to the JD
 10. Build competency grid from JD requirements (6–8 keyword phrases)
 11. Inject keywords naturally into existing achievements (NEVER invent)
@@ -103,6 +103,7 @@ Build a JSON object with the following structure and pass it to `generate-html.m
   "projects": [
     {
       "title": "Project Name",
+      "url": "https://... (optional, from cv.md — links the title)",
       "description": "Description (inline HTML ok)",
       "tech": "Tech stack (optional)"
     }
