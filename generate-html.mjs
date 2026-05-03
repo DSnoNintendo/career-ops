@@ -273,9 +273,9 @@ async function main() {
     '{{NAME}}':       esc(candidate.full_name),
     '{{PHONE}}':      esc(candidate.phone || ''),
     '{{EMAIL}}':      esc(candidate.email),
-    '{{LINKEDIN_URL}}':      candidate.linkedin_url || '',
+    '{{LINKEDIN_URL}}':      esc(candidate.linkedin_url || ''),
     '{{LINKEDIN_DISPLAY}}':  esc(candidate.linkedin_display || ''),
-    '{{PORTFOLIO_URL}}':     candidate.portfolio_url || '',
+    '{{PORTFOLIO_URL}}':     esc(candidate.portfolio_url || ''),
     '{{PORTFOLIO_DISPLAY}}': esc(candidate.portfolio_display || ''),
     '{{LOCATION}}':  esc(candidate.location || ''),
 
