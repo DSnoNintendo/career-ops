@@ -1,25 +1,36 @@
 #!/usr/bin/env node
 
 /**
- * Job Portal Scanner
+ * Authenticated Job Portal Scanner (Harness)
  *
- * Orchestrates authenticated job portal scanning. Each portal has its own
- * scanner class (in scan-auth/) that handles page interaction, extraction,
- * filtering, dedup, and employer blocklist. This file handles CLI, browser
- * setup, login, JD file writing, and results output.
- * 
- * DISCLAIMER: Portal scanning uses your own browser session. Respect each portal's terms of service.
+ * Orchestrates authenticated job portal scanning using Playwright with
+ * persistent browser profiles. Each portal has its own scanner class in
+ * scan-auth/ (e.g. LinkedInScanner) that handles page interaction,
+ * card extraction, filtering, dedup, and employer blocklist.
+ *
+ * This harness handles:
+ *   - CLI parsing and flag handling
+ *   - Browser launch with persistent profile (survives across runs)
+ *   - Login flow (interactive, saves session for future scans)
+ *   - Scan history loading and cross-portal dedup (LinkedIn job IDs +
+ *     company::title keys from all portals including Greenhouse/Ashby/Lever)
+ *   - JD file writing to jds/ with YAML frontmatter
+ *   - Pipeline.md appending (language-agnostic section detection)
+ *   - Scan history appending (accepted + skipped entries)
+ *   - Summary output
+ *
+ * Data flow:
+ *   portals.yml → scanner.parseConfig() → scanner.scan() → listings + skipped
+ *   → saveJd() writes jds/*.md
+ *   → appendToPipeline() writes data/pipeline.md
+ *   → appendScanHistory() writes data/scan-history.tsv
+ *
+ * DISCLAIMER: Portal scanning uses your own browser session. Respect each
+ * portal's terms of service.
  *
  * Usage:
  *   node scan-auth.mjs linkedin                          # Normal scan
- * 
- *  
- *   node scan-auth.mjs --login linkedin                  # Open browser to log in, then exit 
- *   
- *   
- *   node scan-auth.mjs --search "AI Engineer" linkedin   # Override portals.yml config for single search query [NON-AGENT USE ONLY]
- *   node scan-auth.mjs --dry-run linkedin                # Extract but don't write files [NON-AGENT USE ONLY]
- *   node scan-auth.mjs --max 1 linkedin                  # Override portals.yml config to cap results per search query [NON-AGENT USE ONLY]
+ *   node scan-auth.mjs --login linkedin                  # Open browser to log in, then exit
  */
 
 import { chromium } from 'playwright';
@@ -27,6 +38,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
+import { homedir } from 'os';
 
 import LinkedInScanner from './scan-auth/linkedin.mjs';
 
@@ -45,15 +57,13 @@ const SCANNERS = {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORTALS_PATH = join(__dirname, 'portals.yml');
 const SCAN_HISTORY_PATH = join(__dirname, 'data', 'scan-history.tsv');
+const PIPELINE_PATH = join(__dirname, 'data', 'pipeline.md');
 const JDS_DIR = join(__dirname, 'jds');
 
 function getProfileDir(portal) {
-  return join(process.env.HOME, '.scan-auth', portal, 'profile');
+  return join(homedir(), '.scan-auth', portal, 'profile');
 }
 
-function getResultsPath(portal) {
-  return join(__dirname, 'data', `${portal}-scan-results.json`);
-}
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -62,20 +72,32 @@ function getResultsPath(portal) {
 const args = process.argv.slice(2);
 const supportedNames = Object.keys(SCANNERS);
 
-const FLAG_WITH_VALUE = new Set(['--search', '--max']);
-const FLAGS = new Set(['--login', '--dry-run', ...FLAG_WITH_VALUE]);
-const portalId = (() => {
-  for (let i = 0; i < args.length; i++) {
-    if (FLAGS.has(args[i])) { if (FLAG_WITH_VALUE.has(args[i])) i++; continue; }
-    return args[i];
-  }
-  return null;
-})();
+const KNOWN_FLAGS = new Set(['--login']);
+const parsedFlags = new Set();
+const positionalArgs = [];
 
-if (!portalId) {
-  console.error(`Usage: node scan-auth.mjs [options] <portal>\n\nSupported portals: ${supportedNames.join(', ')}`);
+for (const arg of args) {
+  if (arg.startsWith('--')) {
+    if (!KNOWN_FLAGS.has(arg)) {
+      console.error(`Unknown flag: "${arg}"\nUsage: node scan-auth.mjs [--login] <portal>\nSupported portals: ${supportedNames.join(', ')}`);
+      process.exit(1);
+    }
+    parsedFlags.add(arg);
+  } else {
+    positionalArgs.push(arg);
+  }
+}
+
+if (positionalArgs.length === 0) {
+  console.error(`Usage: node scan-auth.mjs [--login] <portal>\n\nSupported portals: ${supportedNames.join(', ')}`);
   process.exit(1);
 }
+if (positionalArgs.length > 1) {
+  console.error(`Too many arguments: "${positionalArgs.join('", "')}"\nUsage: node scan-auth.mjs [--login] <portal>`);
+  process.exit(1);
+}
+
+const portalId = positionalArgs[0];
 if (!SCANNERS[portalId]) {
   console.error(`Unknown portal: "${portalId}"\nSupported portals: ${supportedNames.join(', ')}`);
   process.exit(1);
@@ -84,16 +106,7 @@ if (!SCANNERS[portalId]) {
 const scanner = SCANNERS[portalId];
 
 const FLAG = {
-  login: args.includes('--login'),
-  dryRun: args.includes('--dry-run'),
-  search: (() => {
-    const idx = args.indexOf('--search');
-    return idx !== -1 ? args[idx + 1] : null;
-  })(),
-  maxResults: (() => {
-    const idx = args.indexOf('--max');
-    return idx !== -1 ? parseInt(args[idx + 1], 10) : null;
-  })(),
+  login: parsedFlags.has('--login'),
 };
 
 // ---------------------------------------------------------------------------
@@ -123,15 +136,100 @@ function prompt(question) {
 // Scan history (dedup)
 // ---------------------------------------------------------------------------
 
+/** Extract LinkedIn job ID from a /jobs/view/{id} URL path. */
+function extractJobIdFromUrl(url) {
+  try {
+    const u = new URL(url);
+    const m = u.pathname.match(/\/jobs\/view\/(\d+)/);
+    return m ? m[1] : '';
+  } catch { return ''; }
+}
+
+/**
+ * Load dedup keys from scan-history.tsv into a Set.
+ * LinkedIn rows contribute job IDs (e.g. "4398598777").
+ * All rows contribute company::title keys (e.g. "parloa::senior ai agent architect")
+ * for cross-portal dedup against Greenhouse/Ashby/Lever entries.
+ */
 function loadScanHistory() {
-  const urls = new Set();
-  if (!existsSync(SCAN_HISTORY_PATH)) return urls;
+  const keys = new Set();
+  if (!existsSync(SCAN_HISTORY_PATH)) return keys;
   const lines = readFileSync(SCAN_HISTORY_PATH, 'utf-8').split('\n');
   for (let i = 1; i < lines.length; i++) {
-    const url = lines[i].split('\t')[0];
-    if (url) urls.add(url);
+    const cols = lines[i].split('\t');
+    if (!cols[0]) continue;
+    const url = cols[0];
+
+    // LinkedIn rows: add job ID
+    try {
+      if (new URL(url).hostname.includes('linkedin')) {
+        const jobId = extractJobIdFromUrl(url);
+        if (jobId) keys.add(jobId);
+      }
+    } catch { /* not a valid URL */ }
+
+    // All rows: add company::title for cross-portal dedup
+    const title = (cols[3] || '').trim();
+    const company = (cols[4] || '').trim();
+    if (company && title) {
+      keys.add(`${company}::${title}`.toLowerCase());
+    }
   }
-  return urls;
+  return keys;
+}
+
+/** Append entries to scan-history.tsv. Creates file with header if missing. */
+function appendScanHistory(entries) {
+  const today = new Date().toISOString().split('T')[0];
+  let needsHeader = false;
+  if (!existsSync(SCAN_HISTORY_PATH)) {
+    needsHeader = true;
+    mkdirSync(dirname(SCAN_HISTORY_PATH), { recursive: true });
+  }
+  const lines = [];
+  if (needsHeader) {
+    lines.push('url\tfirst_seen\tportal\ttitle\tcompany\tstatus');
+  }
+  for (const e of entries) {
+    const title = e.title.replace(/\t/g, ' ');
+    const company = e.company.replace(/\t/g, ' ');
+    lines.push(`${e.url}\t${today}\t${e.portal}\t${title}\t${company}\t${e.status}`);
+  }
+  if (lines.length) {
+    const content = (needsHeader ? '' : '\n') + lines.join('\n') + '\n';
+    writeFileSync(SCAN_HISTORY_PATH, content, { flag: 'a' });
+  }
+}
+
+/**
+ * Append listings to pipeline.md under the first ## section (pending).
+ * Language-agnostic: finds sections by ## markers, not by name.
+ */
+function appendToPipeline(listings) {
+  if (listings.length === 0) return;
+  if (!existsSync(PIPELINE_PATH)) {
+    warn(`pipeline.md not found — listings not added. Create data/pipeline.md or run onboarding first.`);
+    return;
+  }
+
+  let text = readFileSync(PIPELINE_PATH, 'utf-8');
+
+  // Find the first ## section (pending, regardless of language) and append
+  // before the second ## section (processed)
+  const firstH2 = text.indexOf('\n## ');
+  if (firstH2 === -1) return;
+  const afterFirstH2 = text.indexOf('\n', firstH2 + 1);
+  const secondH2 = text.indexOf('\n## ', afterFirstH2);
+  const insertAt = secondH2 === -1 ? text.length : secondH2;
+
+  const before = text.slice(0, insertAt);
+  const prefix = before.endsWith('\n') ? '' : '\n';
+  const block = listings.map(l =>
+    `- [ ] ${l.url} | ${l.company.replace(/\|/g, '—')} | ${l.title.replace(/\|/g, '—')}`
+  ).join('\n') + '\n';
+  text = before + prefix + block + text.slice(insertAt);
+
+  writeFileSync(PIPELINE_PATH, text, 'utf-8');
 }
 
 // ---------------------------------------------------------------------------
@@ -187,16 +285,18 @@ function yamlEscape(str) {
   return `"${s}"`;
 }
 
+/** Save a JD to jds/{slug}.md with YAML frontmatter. Returns the relative path. */
 function saveJd(detail) {
   mkdirSync(JDS_DIR, { recursive: true });
-  const slug = slugify(`${detail.company}-${detail.title}`);
+  const jobId = extractJobIdFromUrl(detail.url || '');
+  const suffix = jobId || Date.now().toString();
+  const slug = slugify(`${detail.company}-${detail.title}-${suffix}`);
   const filename = `${slug}.md`;
   const filepath = join(JDS_DIR, filename);
 
   const content = `---
 title: ${yamlEscape(detail.title)}
 company: ${yamlEscape(detail.company)}
-url: ${yamlEscape(detail.url)}
 application_url: ${yamlEscape(detail.applicationUrl || '')}
 scraped: "${new Date().toISOString().split('T')[0]}"
 source: ${portalId}
@@ -215,12 +315,6 @@ ${detail.jdText}
 // Output
 // ---------------------------------------------------------------------------
 
-function writeResults(results, resultsPath) {
-  mkdirSync(dirname(resultsPath), { recursive: true });
-  writeFileSync(resultsPath, JSON.stringify(results, null, 2), 'utf-8');
-  log(`Results written to ${resultsPath}`);
-}
-
 function printSummary(results) {
   const s = results.stats;
   const label = `${scanner.name} Scan Summary`;
@@ -235,6 +329,7 @@ function printSummary(results) {
   console.log(`║  Extracted:         ${String(s.extracted).padStart(4)}                        ║`);
   console.log(`║  Filtered out:      ${String(s.skipped_filter).padStart(4)}                        ║`);
   console.log(`║  Already seen:      ${String(s.skipped_dedup).padStart(4)}                        ║`);
+  console.log(`║  Viewed skipped:    ${String(s.skipped_viewed ?? 0).padStart(4)}                        ║`);
   console.log(`║  JDs saved:         ${String(s.saved).padStart(4)}                        ║`);
   console.log(`║  Errors:            ${String(s.errors).padStart(4)}                        ║`);
   console.log('╚══════════════════════════════════════════════════╝');
@@ -244,7 +339,7 @@ function printSummary(results) {
     for (const l of results.listings) {
       console.log(`  • ${l.title} — ${l.company}`);
     }
-    console.log(`\nNext step: run /career-ops ${portalId} to process these into your pipeline.`);
+    console.log(`\nNext step: run /career-ops pipeline to evaluate the saved listings.`);
   } else {
     console.log('\nNo new listings found this run.');
   }
@@ -257,6 +352,10 @@ function printSummary(results) {
 async function main() {
   log(`Starting ${scanner.name} scanner...`);
 
+  if (!existsSync(PORTALS_PATH)) {
+    error(`portals.yml not found. Copy the template to get started:\n  cp templates/portals.example.yml portals.yml`);
+    process.exit(1);
+  }
   const config = scanner.parseConfig(readFileSync(PORTALS_PATH, 'utf-8'));
 
   const profileDir = getProfileDir(portalId);
@@ -293,44 +392,47 @@ async function main() {
 
     // Scanner handles extraction, filtering, dedup — returns accepted listings
     const scanResult = await scanner.scan(context, config, {
-      maxResults: FLAG.maxResults,
-      searchFilter: FLAG.search,
       scanHistory: loadScanHistory(),
     });
 
     if (!scanResult) return;
 
-    // Write JD files for each accepted listing
-    const savedListings = [];
+    // Write JD files, pipeline entries, and scan history
+    const pipelineEntries = [];
+    const historyEntries = [];
     for (const detail of scanResult.listings) {
-      let jdFile = null;
-      if (!FLAG.dryRun) {
-        jdFile = saveJd(detail);
-      }
-      savedListings.push({
+      const jdFile = saveJd(detail);
+      const url = jdFile ? `local:${jdFile}` : detail.url;
+      pipelineEntries.push({
+        url,
         title: detail.title,
         company: detail.company,
-        source_url: detail.url,
-        application_url: detail.applicationUrl || '',
-        jd_file: jdFile || `jds/${slugify(`${detail.company}-${detail.title}`)}.md`,
+      });
+      historyEntries.push({
+        url: detail.url,
+        portal: portalId,
+        title: detail.title,
+        company: detail.company,
+        status: 'added',
       });
     }
 
-    const results = {
-      scan_date: new Date().toISOString().split('T')[0],
-      source: portalId,
-      listings: savedListings,
-      errors: scanResult.errors,
-      stats: { ...scanResult.stats, saved: savedListings.length },
-    };
-
-    if (!FLAG.dryRun) {
-      writeResults(results, getResultsPath(portalId));
-    } else {
-      log('Dry run — no files written');
-      console.log(JSON.stringify(results, null, 2));
+    // Add skipped entries to scan history
+    for (const entry of scanResult.skipped || []) {
+      historyEntries.push({
+        url: entry.url,
+        portal: portalId,
+        title: entry.title,
+        company: entry.company,
+        status: entry.status,
+      });
     }
-    printSummary(results);
+
+    appendToPipeline(pipelineEntries);
+    appendScanHistory(historyEntries);
+    log(`Added ${pipelineEntries.length} listings to pipeline.md`);
+    log(`Wrote ${historyEntries.length} entries to scan-history.tsv (${pipelineEntries.length} added, ${(scanResult.skipped || []).length} skipped)`);
+    printSummary({ listings: pipelineEntries, stats: { ...scanResult.stats, saved: pipelineEntries.length }, errors: scanResult.errors });
   } finally {
     await context.close();
   }

@@ -32,7 +32,7 @@ Determine the mode from `{{mode}}`:
 | `patterns` | `patterns` |
 | `followup` | `followup` |
 
-**scan-auth mode:** Runs `node scan-auth.mjs <portal>` (e.g. `node scan-auth.mjs linkedin`). Uses Playwright with a persistent browser profile for authenticated portal scanning. Supports `--login`, `--search`, `--dry-run`, `--max` flags. Portal-specific logic lives in `scan-auth/<portal>.mjs`.
+**scan-auth mode:** Runs `node scan-auth.mjs <portal>` (e.g. `node scan-auth.mjs linkedin`). Uses Playwright with a persistent browser profile for authenticated portal scanning. Supports `--login` flag. Portal-specific logic lives in `scan-auth/<portal>.mjs`.
 
 **Auto-pipeline detection:** If `{{mode}}` is not a known sub-command AND contains JD text (keywords: "responsibilities", "requirements", "qualifications", "about the role", "we're looking for", company name + role) or a URL to a JD, execute `auto-pipeline`.
 
@@ -81,6 +81,7 @@ Read `modes/_shared.md` + `modes/{mode}.md`
 Applies to: `auto-pipeline`, `oferta`, `ofertas`, `pdf`, `contacto`, `apply`, `pipeline`, `scan`, `scan-auth`, `batch`
 
 ### Standalone modes (only their mode file):
+
 Read `modes/{mode}.md`
 
 Applies to: `tracker`, `deep`, `training`, `project`, `patterns`, `followup`
