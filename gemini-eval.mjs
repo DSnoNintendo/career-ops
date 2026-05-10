@@ -14,7 +14,25 @@
  * Requires:
  *   GEMINI_API_KEY in .env (or environment variable)
  *
- * Free-tier model: gemini-2.0-flash (generous quota, no billing required)
+ * Free-tier model: gemini-2.5-flash (generous quota, no billing required)
+ *
+ * Model deprecation reference (per Google AI for Developers, May 2026):
+ *   - gemini-2.0-flash       deprecated 2026-03-31  (do not use)
+ *   - gemini-2.0-flash-lite  deprecated 2026-03-31
+ *   - gemini-2.5-flash       deprecated 2026-06-17  (current default)
+ *   - gemini-2.5-flash-lite  deprecated 2026-07-22
+ * Stable Gemini models follow a 12-month lifecycle from their release date.
+ * Source: https://ai.google.dev/gemini-api/docs/models
+ *
+ * When the current default approaches its deprecation date, bump
+ * `modelName` below and the `--model` examples accordingly.
+ *
+ * Output protocol:
+ *   The LLM returns a single JSON object (responseMimeType: application/json).
+ *   This script renders the markdown report from that JSON. The LLM never
+ *   emits markdown directly, which prevents token-repetition loops on
+ *   table-separator rows (a known Gemini failure mode that produced
+ *   "unknown — unknown" headers when the SCORE_SUMMARY block was truncated).
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
@@ -67,11 +85,11 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
   USAGE
     node gemini-eval.mjs "<JD text>"
     node gemini-eval.mjs --file ./jds/my-job.txt
-    node gemini-eval.mjs --model gemini-2.0-flash "<JD text>"
+    node gemini-eval.mjs --model gemini-2.5-flash "<JD text>"
 
   OPTIONS
     --file <path>    Read JD from a file instead of inline text
-    --model <name>   Gemini model to use (default: gemini-2.0-flash)
+    --model <name>   Gemini model to use (default: gemini-2.5-flash)
     --no-save        Do not save report to reports/ directory
     --help           Show this help
 
@@ -89,7 +107,7 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
 
 // Parse flags
 let jdText = '';
-let modelName = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+let modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 let saveReport = true;
 
 for (let i = 0; i < args.length; i++) {
@@ -172,12 +190,21 @@ const profileContent = readFile(PATHS.profile,     'modes/_profile.md');
 const profileYml     = readFile(PATHS.profileYml,  'config/profile.yml');
 
 // ---------------------------------------------------------------------------
-// Build the system prompt (mirrors the Claude skill router logic)
+// Build the system prompt
+//
+// Methodology files (modes/_shared.md, modes/oferta.md) describe the A-G
+// evaluation in markdown. In this CLI session we override the output format:
+// the LLM returns a single JSON object, the script renders the markdown.
+// This eliminates the "wall of dashes" failure mode where Gemini got stuck
+// in a token-repetition loop on a markdown table separator and truncated
+// before emitting the SCORE_SUMMARY block (see header docblock).
 // ---------------------------------------------------------------------------
 const systemPrompt = `You are career-ops, an AI-powered job search assistant.
-You evaluate job offers against the user's CV using a structured A-G scoring system.
+You evaluate job offers against the user's CV using a structured A-G evaluation.
 
-Your evaluation methodology is defined below. Follow it exactly.
+Use the methodology documents below to inform your analysis. The OUTPUT FORMAT
+section at the end overrides any markdown formatting instructions inside those
+documents -- in this CLI session you return JSON, not markdown.
 
 ═══════════════════════════════════════════════════════
 SYSTEM CONTEXT (_shared.md)
@@ -205,45 +232,192 @@ USER ARCHETYPES & NARRATIVE (_profile.md)
 ${profileContent}
 
 ═══════════════════════════════════════════════════════
-IMPORTANT OPERATING RULES FOR THIS CLI SESSION
+OUTPUT FORMAT (overrides methodology -- this CLI session only)
 ═══════════════════════════════════════════════════════
-1. You do NOT have access to WebSearch, Playwright, or file writing tools.
-   - For Block D (Comp research): provide salary estimates based on your training data, clearly noted as estimates.
-   - For Block G (Legitimacy): analyze the JD text only; skip URL/page freshness checks.
-   - Post-evaluation file saving is handled by the script, not by you.
-2. Generate Blocks A through G in full, in English, unless the JD is in another language.
-3. At the very end, output a machine-readable summary block in this exact format:
+You do NOT have access to WebSearch, Playwright, or file writing tools.
+- For Comp Analysis: provide salary estimates from your training data, clearly noted as estimates.
+- For Posting Legitimacy: analyze the JD text only; skip URL/freshness checks.
+- The script handles file saving and markdown rendering -- not you.
 
----SCORE_SUMMARY---
-COMPANY: <company name or "Unknown">
-ROLE: <role title>
-SCORE: <global score as decimal, e.g. 3.8>
-ARCHETYPE: <detected archetype>
-LEGITIMACY: <High Confidence | Proceed with Caution | Suspicious>
----END_SUMMARY---
+Return ONLY a single valid JSON object matching the schema below. No prose,
+no markdown, no code fences -- just the raw JSON. Do NOT emit markdown
+tables, separator rows (e.g. |---|), or any other markdown formatting.
+
+Schema:
+{
+  "company":      string,                      // company name; "Unknown" if absent
+  "role":         string,                      // exact role title from the JD
+  "url":          string | null,               // canonical job URL if present in the JD, else null
+  "archetype":    string,                      // detected archetype (short label)
+  "score":        number,                      // global score, decimal in [1.0, 5.0]
+  "legitimacy":   string,                      // one of: "High Confidence", "Proceed with Caution", "Suspicious"
+  "verification": string | null,               // e.g. "unconfirmed (batch mode)" or null
+  "role_summary": {
+    "archetype":  string,
+    "domain":     string,
+    "seniority":  string,
+    "remote":     string,
+    "comp":       string,                      // "Not stated" if absent
+    "team_size":  string | null,
+    "tldr":       string                       // 1-2 sentence summary
+  },
+  "cv_match": [
+    { "requirement": string, "match": string }  // one row per JD requirement
+  ],
+  "recommendation":      string,               // 2-4 sentences; lead with APPLY / CONSIDER / SKIP
+  "comp_analysis":       string,               // prose
+  "cultural_signals":    string,               // prose
+  "red_flags":           [string],             // 0+ concise concerns
+  "legitimacy_analysis": string                // prose explaining the legitimacy tier
+}
+
+Rules:
+- Begin your response with { and end with }.
+- Use double quotes for all keys and string values.
+- Use null (not "null") for missing optional fields.
+- Do not wrap the JSON in code fences.
+- Do not include any commentary outside the JSON.
 `;
 
 // ---------------------------------------------------------------------------
-// Call Gemini API
+// Markdown rendering helpers (script-side -- never asked of the LLM)
 // ---------------------------------------------------------------------------
-console.log(`🤖  Calling Gemini (${modelName})... this may take 30-60 seconds.\n`);
+function escPipe(s) {
+  return String(s ?? '').replace(/\|/g, '\\|');
+}
+
+function strOr(v, fallback = 'unknown') {
+  if (v === null || v === undefined) return fallback;
+  const s = String(v).trim();
+  return s.length === 0 ? fallback : s;
+}
+
+function parseJsonLoosely(text) {
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (_) {}
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fenced) {
+    try { return JSON.parse(fenced[1]); } catch (_) {}
+  }
+  const first = text.indexOf('{');
+  const last  = text.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try { return JSON.parse(text.slice(first, last + 1)); } catch (_) {}
+  }
+  return null;
+}
+
+function renderHeader(data, today, modelName) {
+  const lines = [];
+  lines.push(`# Evaluation: ${strOr(data.company)} -- ${strOr(data.role)}`);
+  const scoreStr = (typeof data.score === 'number' && !Number.isNaN(data.score))
+    ? `${data.score}/5`
+    : '?/5';
+  lines.push(`**Date:** ${today}  **Archetype:** ${strOr(data.archetype)}  **Score:** ${scoreStr}`);
+  const line3 = [];
+  if (data.url)          line3.push(`**URL:** ${data.url}`);
+  if (data.verification) line3.push(`**Verification:** ${data.verification}`);
+  if (line3.length)      lines.push(line3.join('  '));
+  lines.push(`**Legitimacy:** ${strOr(data.legitimacy)}`);
+  lines.push(`**PDF:** pending`);
+  lines.push(`**Tool:** Gemini (${modelName})`);
+  return lines.join('\n');
+}
+
+function renderRoleSummary(rs = {}) {
+  const lines = ['## A) Role Summary'];
+  const fields = [
+    ['Archetype', rs.archetype],
+    ['Domain',    rs.domain],
+    ['Seniority', rs.seniority],
+    ['Remote',    rs.remote],
+    ['Comp',      rs.comp],
+    ['Team Size', rs.team_size],
+    ['TL;DR',     rs.tldr],
+  ];
+  for (const [label, value] of fields) {
+    if (value) lines.push(`- **${label}:** ${value}`);
+  }
+  if (lines.length === 1) lines.push('_No role summary available._');
+  return lines.join('\n');
+}
+
+function renderCvMatch(matches = []) {
+  const lines = ['## B) CV Match'];
+  if (!Array.isArray(matches) || matches.length === 0) {
+    lines.push('_No CV match analysis available._');
+    return lines.join('\n');
+  }
+  lines.push('| Requirement | Match |');
+  lines.push('|---|---|');
+  for (const m of matches) {
+    lines.push(`| ${escPipe(m?.requirement)} | ${escPipe(m?.match)} |`);
+  }
+  return lines.join('\n');
+}
+
+function renderProse(heading, text) {
+  const body = (text && String(text).trim()) ? String(text).trim() : '_No analysis provided._';
+  return `${heading}\n${body}`;
+}
+
+function renderBullets(heading, items = []) {
+  const lines = [heading];
+  if (!Array.isArray(items) || items.length === 0) {
+    lines.push('_None identified._');
+  } else {
+    for (const item of items) lines.push(`- ${item}`);
+  }
+  return lines.join('\n');
+}
+
+function renderReport(data, today, modelName) {
+  return [
+    renderHeader(data, today, modelName),
+    '',
+    renderRoleSummary(data.role_summary),
+    '',
+    renderCvMatch(data.cv_match),
+    '',
+    renderProse('## C) Recommendation',       data.recommendation),
+    '',
+    renderProse('## D) Comp Analysis',        data.comp_analysis),
+    '',
+    renderProse('## E) Cultural Signals',     data.cultural_signals),
+    '',
+    renderBullets('## F) Red Flags',          data.red_flags),
+    '',
+    renderProse('## G) Posting Legitimacy',   data.legitimacy_analysis),
+    '',
+  ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Call Gemini API (JSON output mode)
+// ---------------------------------------------------------------------------
+console.log(`🤖  Calling Gemini (${modelName}) in JSON mode... this may take 30-60 seconds.\n`);
 
 const genAI = new GoogleGenerativeAI(apiKey);
 const model = genAI.getGenerativeModel({
   model: modelName,
   generationConfig: {
-    temperature: 0.4,      // deterministic enough for structured evaluation
-    maxOutputTokens: 8192, // full 7-block evaluation
+    temperature: 0.4,                       // deterministic enough for structured evaluation
+    maxOutputTokens: 32768,                 // bumped from 8192 to remove truncation as a failure mode
+    responseMimeType: 'application/json',   // forces structured JSON output
   },
 });
 
-let evaluationText;
+let rawResponse;
+let usage;
+let finishReason;
 try {
   const result = await model.generateContent([
     { text: systemPrompt },
     { text: `\n\nJOB DESCRIPTION TO EVALUATE:\n\n${jdText}` },
   ]);
-  evaluationText = result.response.text();
+  rawResponse  = result.response.text();
+  usage        = result.response.usageMetadata;
+  finishReason = result.response.candidates?.[0]?.finishReason;
 } catch (err) {
   console.error('❌  Gemini API error:', err.message);
   if (err.message?.includes('API_KEY')) {
@@ -255,42 +429,59 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Display evaluation
+// Diagnostics
 // ---------------------------------------------------------------------------
+const promptTok = usage?.promptTokenCount ?? '?';
+const outTok    = usage?.candidatesTokenCount ?? '?';
+console.log(`📊  finishReason: ${finishReason ?? 'unknown'}  |  tokens: ${outTok} out / ${promptTok} in`);
+if (finishReason === 'MAX_TOKENS') {
+  console.warn(`⚠️   Response hit maxOutputTokens. JSON may be truncated and unparseable.`);
+}
+
+// ---------------------------------------------------------------------------
+// Parse JSON; if it fails, persist raw response so no work is lost
+// ---------------------------------------------------------------------------
+const data = parseJsonLoosely(rawResponse);
+
+if (!data) {
+  console.error(`\n❌  Could not parse JSON from Gemini response.`);
+  if (saveReport) {
+    try {
+      if (!existsSync(PATHS.reports)) mkdirSync(PATHS.reports, { recursive: true });
+      const today   = new Date().toISOString().split('T')[0];
+      const num     = nextReportNumber();
+      const rawPath = join(PATHS.reports, `${num}-unparsed-${today}.raw.txt`);
+      writeFileSync(rawPath, rawResponse ?? '', 'utf-8');
+      console.error(`    Raw response saved to: reports/${num}-unparsed-${today}.raw.txt`);
+    } catch (err) {
+      console.error(`    Failed to save raw response: ${err.message}`);
+    }
+  } else {
+    console.error(`--- raw response ---\n${rawResponse}\n--- end raw ---`);
+  }
+  process.exit(2);
+}
+
+// ---------------------------------------------------------------------------
+// Render markdown report
+// ---------------------------------------------------------------------------
+const today          = new Date().toISOString().split('T')[0];
+const reportContent  = renderReport(data, today, modelName);
+
 console.log('\n' + '═'.repeat(66));
 console.log('  CAREER-OPS EVALUATION — powered by Google Gemini');
 console.log('═'.repeat(66) + '\n');
-console.log(evaluationText);
-
-// ---------------------------------------------------------------------------
-// Parse score summary
-// ---------------------------------------------------------------------------
-const summaryMatch = evaluationText.match(
-  /---SCORE_SUMMARY---\s*([\s\S]*?)---END_SUMMARY---/
-);
-
-let company    = 'unknown';
-let role       = 'unknown';
-let score      = '?';
-let archetype  = 'unknown';
-let legitimacy = 'unknown';
-
-if (summaryMatch) {
-  const block = summaryMatch[1];
-  const extract = (key) => {
-    const m = block.match(new RegExp(`${key}:\\s*(.+)`));
-    return m ? m[1].trim() : 'unknown';
-  };
-  company    = extract('COMPANY');
-  role       = extract('ROLE');
-  score      = extract('SCORE');
-  archetype  = extract('ARCHETYPE');
-  legitimacy = extract('LEGITIMACY');
-}
+console.log(reportContent);
 
 // ---------------------------------------------------------------------------
 // Save report
 // ---------------------------------------------------------------------------
+const company    = strOr(data.company);
+const role       = strOr(data.role);
+const archetype  = strOr(data.archetype);
+const legitimacy = strOr(data.legitimacy);
+const score      = (typeof data.score === 'number' && !Number.isNaN(data.score)) ? data.score : '?';
+
 if (saveReport) {
   try {
     if (!existsSync(PATHS.reports)) {
@@ -298,29 +489,13 @@ if (saveReport) {
     }
 
     const num         = nextReportNumber();
-    const today       = new Date().toISOString().split('T')[0];
-    const companySlug = company.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const companySlug = company.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown';
     const filename    = `${num}-${companySlug}-${today}.md`;
     const reportPath  = join(PATHS.reports, filename);
-
-    const reportContent = `# Evaluation: ${company} — ${role}
-
-**Date:** ${today}
-**Archetype:** ${archetype}
-**Score:** ${score}/5
-**Legitimacy:** ${legitimacy}
-**PDF:** pending
-**Tool:** Gemini (${modelName})
-
----
-
-${evaluationText.replace(/---SCORE_SUMMARY---[\s\S]*?---END_SUMMARY---/, '').trim()}
-`;
 
     writeFileSync(reportPath, reportContent, 'utf-8');
     console.log(`\n✅  Report saved: reports/${filename}`);
 
-    // Append tracker entry reminder
     console.log(`\n📊  Tracker entry (add to data/applications.md):`);
     console.log(`    | ${num} | ${today} | ${company} | ${role} | ${score} | Evaluada | ❌ | [${num}](reports/${filename}) |`);
   } catch (err) {
