@@ -435,6 +435,7 @@ async function main() {
     printSummary({ listings: pipelineEntries, stats: { ...scanResult.stats, saved: pipelineEntries.length }, errors: scanResult.errors });
   } finally {
     await context.close();
+    process.exit(0);
   }
 }
 
